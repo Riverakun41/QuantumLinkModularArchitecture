@@ -1,0 +1,86 @@
+import matplotlib.pyplot as plt
+import numpy as np
+from qutip import *
+
+#Parámetros fijos:
+m=120
+ges=[0.05,0.5,1.0] #Diferentes valores de inicio de fuerza de acople
+wq = 6 * 2 * np.pi  # qubit frequency
+wcavity = 6 * 2 * np.pi  # cavity frequency
+#t = np.linspace(0, 40, 1000)  # Tiempo de evolución
+
+# Define marker and linestyle arrays
+markers = ['o', 's', 'D']  # Example: circle, square, diamond
+linestyles = ['-', '-', '-']  # Example: solid, dashed, dash-dot
+markevery=[8, 10, 10]
+
+#Barrido de los parámetros
+barrido_wcoup = np.linspace(3 * 2 * np.pi, 8 * 2 * np.pi, 500)  # Frecuencia de acopladores (6-10 GHz)
+barrido_gcoup =np.logspace(-1, 0, m) #Rango en el que estudiamos los valores del decaimiento de las guiaondas (Kappa)
+
+#Inicialización de la matriz para cada punto
+probabilidades_Qb = np.zeros((len(barrido_gcoup), len(barrido_wcoup)))
+
+for i, g_coup in enumerate(barrido_gcoup):
+    for j, wcouplers in enumerate(barrido_wcoup):
+
+        kappa = 0.0 # 0.1*2*np.pi  # cavity dissipation rate
+        gamma = 0.0 #losses[i]*2*np.pi  # atom dissipation rate
+        N = 15  # number of cavity fock states
+        n_th_a = 0.0  # avg number of thermal bath excitation
+
+        gqc = g_coup * 2 * np.pi    # Acoplamiento qubit-coupler
+        gcw = g_coup * 2 * np.pi    # Acoplamiento coupler-waveguide
+        
+        psi0 = tensor(basis(2, 1), basis(2, 0), basis(2, 0), basis(2, 0) , basis(2, 0))    # start with an excited atom
+        # cavity#atom1#atom2#coupler1#coupler2
+
+        # Time array
+        t = np.linspace(0, 40, 1000)
+
+        sm1 = tensor(destroy(2), qeye(2), qeye(2), qeye(2), qeye(2))
+        ca = tensor(qeye(2), destroy(2), qeye(2), qeye(2), qeye(2))
+        a = tensor(qeye(2), qeye(2), destroy(2), qeye(2), qeye(2))
+        cb = tensor(qeye(2), qeye(2), qeye(2), destroy(2), qeye(2))
+        sm2 = tensor(qeye(2), qeye(2), qeye(2), qeye(2), destroy(2))
+
+
+        H = (wq * (sm1.dag() * sm1 + sm2.dag() * sm2)) + wcavity * (a.dag() * a) + wcouplers * (ca.dag() * ca + cb.dag() *cb) + gqc * ( ca.dag() * sm1 + ca * sm1.dag() + cb.dag() * sm2 + cb * sm2.dag()) + gcw * (a.dag() * ca + a * ca.dag() + a.dag() * cb + a * cb.dag()) 
+
+        c_ops = []
+
+        # cavity relaxation
+        rate = kappa * (1 + n_th_a)
+        if rate > 0.0:
+            c_ops.append(np.sqrt(rate) * a)
+            c_ops.append(np.sqrt(rate)*ca)
+            c_ops.append(np.sqrt(rate) * cb)
+
+        # cavity excitation, if temperature > 0
+        rate = kappa * n_th_a
+        if rate > 0.0:
+            c_ops.append(np.sqrt(rate) * a.dag())
+            c_ops.append(np.sqrt(rate)* ca.dag())
+            c_ops.append(np.sqrt(rate) * cb.dag()) 
+
+        # qubit relaxation
+        rate = gamma
+        if rate > 0.0:
+            c_ops.append(np.sqrt(rate) * sm1)
+            c_ops.append(np.sqrt(rate) * sm2)
+
+        output = mesolve(H, psi0, t, c_ops, [sm1.dag() * sm1, ca.dag() * ca, a.dag() * a, cb.dag() * cb, sm2.dag() * sm2])
+
+        n_qb = output.expect[4]  # Qubit B occupation probability
+        probabilidades_Qb[i,j]=max(n_qb)
+
+# Gráfico del mapa de calor
+plt.figure(figsize=(12, 8))
+plt.imshow(probabilidades_Qb, extent=[3, 8, 0.1, 1], origin='lower', aspect='auto', cmap='viridis')
+plt.colorbar(label="Máxima Probabilidad de Ocupación")
+plt.xlabel("$f_{coup}$ (GHz)", fontsize=18)
+plt.ylabel("$g_{coup}$ (MHz)", fontsize=18)
+plt.yscale("log")
+plt.title("Mapa de Calor: Trade-off $g_{coup}$ vs $f_{coup}$", fontsize=20)
+plt.grid(True, linestyle='--', alpha=0.6)
+plt.show()
