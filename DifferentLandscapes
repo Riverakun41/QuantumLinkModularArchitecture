@@ -1,0 +1,498 @@
+### This should be seen as an extension of the study of the figuyre of Merit, to better visualize the behaviour of the system
+
+#With the following code  you can check the behaviour for a fixed set of Coupling strengths's.
+import numpy as np
+import matplotlib.pyplot as plt
+from qutip import *
+
+from scipy.signal import find_peaks
+
+def find_latency_by_peaks(fidelity_vals, times, threshold=0.5):
+    """
+    Finds the first peak in fidelity above a threshold, giving a more physical latency estimate.
+    """
+    peaks, _ = find_peaks(fidelity_vals, height=threshold)
+    if len(peaks) == 0:
+        return None, None
+    first_peak = peaks[0]
+    return times[first_peak], fidelity_vals[first_peak]
+
+n=130
+wq = 6 * 2 * np.pi  # qubit frequency
+wcavity = 6 * 2 * np.pi  # cavity frequency
+wcouplers = 6 * 2 * np.pi  # frecuencia fija del acoplador
+gqc = 0.1 * 2 * np.pi  # coupling strength qubit-coupler
+gcw = 0.1 * 2 * np.pi  # coupling strength coupler-cavity
+
+
+# Define parameter grid
+gamma_vals = np.linspace(0.1, 1.0, 20) * 2 * np.pi  # 5 for speed; increase later
+kappa_vals = np.linspace(0.1, 1.0, 20) * 2 * np.pi
+g_vals = np.linspace(1.0, 5.0, 3) * 2 * np.pi
+
+fidelity_grid = np.zeros((len(gamma_vals), len(kappa_vals), len(g_vals)))
+Latency_grid = np.zeros((len(gamma_vals), len(kappa_vals), len(g_vals)))
+FOM = np.zeros((len(gamma_vals), len(kappa_vals), len(g_vals)))
+
+# Traverse the sacred parameter space
+for i, gamma in enumerate(gamma_vals):
+    for j, kappa in enumerate(kappa_vals):
+        for k, g in enumerate(g_vals):
+            
+            gqc = g  # coupling strength qubit-coupler
+            gcw = g  # coupling strength coupler-cavity
+            n_th_a = 0.0  # número promedio de excitaciones térmicas
+            
+            # Estado inicial: qubit A excitado, resto en tierra
+            psi0 = tensor(basis(2, 1), basis(2, 0), basis(2, 0), basis(2, 0), basis(2, 0))    
+            rho0 = psi0 * psi0.dag()
+            rho_A_inicial = rho0.ptrace(0)  # Estado inicial del qubit A
+            
+            # Tiempos de simulación
+            t = np.linspace(0, 80, 2000)
+            
+            # Operadores de aniquilación
+            sm1 = tensor(destroy(2), qeye(2), qeye(2), qeye(2), qeye(2))
+            ca = tensor(qeye(2), destroy(2), qeye(2), qeye(2), qeye(2))
+            a = tensor(qeye(2), qeye(2), destroy(2), qeye(2), qeye(2))
+            cb = tensor(qeye(2), qeye(2), qeye(2), destroy(2), qeye(2))
+            sm2 = tensor(qeye(2), qeye(2), qeye(2), qeye(2), destroy(2))
+            
+            # Hamiltoniano del sistema
+            H = (wq * (sm1.dag() * sm1 + sm2.dag() * sm2)) + wcavity * (a.dag() * a) + wcouplers * (ca.dag() * ca + cb.dag() *cb) + gqc * ( ca.dag() * sm1 + ca * sm1.dag() + cb.dag() * sm2 + cb * sm2.dag()) + gcw * (a.dag() * ca + a * ca.dag() + a.dag() * cb + a * cb.dag()) 
+            # Operadores de colapso
+            c_ops = []
+            
+            # Relajación de la cavidad
+            rate = kappa * (1 + n_th_a)
+            if rate > 0.0:
+                c_ops.append(np.sqrt(rate) * a)
+                c_ops.append(np.sqrt(rate)*ca)
+                c_ops.append(np.sqrt(rate) * cb)
+            
+            # Excitación térmica
+            rate = kappa * n_th_a
+            if rate > 0.0:
+                c_ops.append(np.sqrt(rate) * a.dag())
+                c_ops.append(np.sqrt(rate)*ca.dag())
+                c_ops.append(np.sqrt(rate) * cb.dag())
+            
+            # Relajación de los qubits
+            rate = gamma
+            if rate > 0.0:
+                c_ops.append(np.sqrt(rate) * sm1)
+                c_ops.append(np.sqrt(rate) * sm2)
+            
+            # Simulación temporal
+            output = mesolve(H, psi0, t, c_ops, [sm1.dag() * sm1, ca.dag() * ca, a.dag() * a, cb.dag() * cb, sm2.dag() * sm2])
+
+            poblacion_qb2 = output.expect[4]  # Última población del qubit b
+            
+            # Fidelidad en el tiempo entre el qubit B y el estado inicial del qubit A
+            fidelity_vals = []
+            rho_objetivo = rho_A_inicial  # El objetivo es transferir el estado de A a B
+            
+            for p in poblacion_qb2:  # población del qubit B a lo largo del tiempo
+                rho_t = p * ket2dm(basis(2, 1)) + (1 - p) * ket2dm(basis(2, 0))
+                F_t = fidelity(rho_t, rho_objetivo)
+                fidelity_vals.append(F_t)
+
+            fidelity_grid[i, j, k] = max(fidelity_vals) # Max fidelity across sweep
+            
+            n_qb = output.expect[4]
+    
+            period_t, Fidelity_peak = find_latency_by_peaks(fidelity_vals, t) #He cambiado la lista de máximo de población a directamente la lista de Fidelidad
+            
+            if period_t is not None:
+                L = 0.5 * period_t
+            else:
+                L = np.nan  # CHANGE TO np.nan
+
+            Latency_vals = []
+            Latency_vals.append(L)
+
+            Latency_grid[i, j, k] = min(Latency_vals) # Minimun Latency across sweep
+
+            if not np.isnan(L) and L > 0:
+                FOM[i, j, k] = fidelity_grid[i, j, k] / L
+            else:
+                FOM[i, j, k] = np.nan
+            
+
+# 2D Contour Plot for FoM at different g values (1, 3, 5 GHz)
+fig, axs = plt.subplots(1, 3, figsize=(18, 5), constrained_layout=True)
+
+g_vals_ghz = g_vals / (2 * np.pi)
+gamma_vals_ghz = gamma_vals / (2 * np.pi)
+kappa_vals_ghz = kappa_vals / (2 * np.pi)
+
+for idx, g_target in enumerate([1.0, 3.0, 5.0]):  # g in GHz
+    g_index = np.where(np.isclose(g_vals_ghz, g_target))[0][0]
+    ax = axs[idx]
+
+    FoM_slice = FOM[:, :, g_index]
+    contour = ax.contourf(gamma_vals_ghz, kappa_vals_ghz, FoM_slice.T, levels=50, cmap='viridis')
+    ax.set_title(f'FoM landscape at g = {g_target} GHz')
+    ax.set_xlabel('Gamma (GHz)')
+    ax.set_ylabel('Kappa (GHz)')
+    fig.colorbar(contour, ax=ax, label='FoM (Fidelity / Latency)')
+
+plt.suptitle('2D Contour Landscapes of FoM at Different g values', fontsize=16)
+plt.show()
+
+from mpl_toolkits.mplot3d import Axes3D  # Needed for 3D plotting
+
+g_vals_ghz = g_vals / (2 * np.pi)
+gamma_vals_ghz = gamma_vals / (2 * np.pi)
+kappa_vals_ghz = kappa_vals / (2 * np.pi)
+GAMMA, KAPPA = np.meshgrid(gamma_vals_ghz, kappa_vals_ghz, indexing='ij')
+
+for idx, g_target in enumerate([1.0, 3.0, 5.0]):
+    g_index = np.where(np.isclose(g_vals_ghz, g_target))[0][0]
+    FoM_slice = FOM[:, :, g_index]
+
+    fig = plt.figure(figsize=(10, 7))
+    ax = fig.add_subplot(111, projection='3d')
+
+    # Plot 3D surface
+    surf = ax.plot_surface(GAMMA, KAPPA, FoM_slice, cmap='viridis', edgecolor='none', alpha=0.9)
+
+    # Add contour projection
+    ax.contour(GAMMA, KAPPA, FoM_slice, zdir='z', offset=np.nanmin(FoM_slice), cmap='viridis', linestyles='solid')
+
+    ax.set_xlabel('Gamma (GHz)')
+    ax.set_ylabel('Kappa (GHz)')
+    ax.set_zlabel('FoM')
+    ax.set_title(f'FoM Surface + Contour at g = {g_target} GHz')
+    fig.colorbar(surf, ax=ax, shrink=0.5, aspect=10, label='FoM')
+
+    # Optional: Adjust z limit for better view
+    ax.set_zlim(np.nanmin(FoM_slice), np.nanmax(FoM_slice)*1.1)
+
+    plt.tight_layout()
+    plt.show()
+
+#__________________________________________________________________________________________________________
+#With the following code  you can check the behaviour for a fixed set of gamma's (losses due to the qubit)
+import numpy as np
+import matplotlib.pyplot as plt
+from qutip import *
+from mpl_toolkits.mplot3d import Axes3D  # Needed for 3D plotting
+
+from scipy.signal import find_peaks
+
+def find_latency_by_peaks(fidelity_vals, times, threshold=0.5):
+    """
+    Finds the first peak in fidelity above a threshold, giving a more physical latency estimate.
+    """
+    peaks, _ = find_peaks(fidelity_vals, height=threshold)
+    if len(peaks) == 0:
+        return None, None
+    first_peak = peaks[0]
+    return times[first_peak], fidelity_vals[first_peak]
+
+n=130
+wq = 6 * 2 * np.pi  # qubit frequency
+wcavity = 6 * 2 * np.pi  # cavity frequency
+wcouplers = 6 * 2 * np.pi  # frecuencia fija del acoplador
+gqc = 0.1 * 2 * np.pi  # coupling strength qubit-coupler
+gcw = 0.1 * 2 * np.pi  # coupling strength coupler-cavity
+
+
+# Define parameter grid
+gamma_vals = np.linspace(0.2, 1.0, 3) * 2 * np.pi  # 5 for speed; increase later
+kappa_vals = np.linspace(0.1, 1.0, 20) * 2 * np.pi
+g_vals = np.linspace(0.05, 5.0, 20) * 2 * np.pi
+
+fidelity_grid = np.zeros((len(gamma_vals), len(kappa_vals), len(g_vals)))
+Latency_grid = np.zeros((len(gamma_vals), len(kappa_vals), len(g_vals)))
+FOM = np.zeros((len(gamma_vals), len(kappa_vals), len(g_vals)))
+
+# Traverse the sacred parameter space
+for i, gamma in enumerate(gamma_vals):
+    for j, kappa in enumerate(kappa_vals):
+        for k, g in enumerate(g_vals):
+            
+            gqc = g  # coupling strength qubit-coupler
+            gcw = g  # coupling strength coupler-cavity
+            n_th_a = 0.0  # número promedio de excitaciones térmicas
+            
+            # Estado inicial: qubit A excitado, resto en tierra
+            psi0 = tensor(basis(2, 1), basis(2, 0), basis(2, 0), basis(2, 0), basis(2, 0))    
+            rho0 = psi0 * psi0.dag()
+            rho_A_inicial = rho0.ptrace(0)  # Estado inicial del qubit A
+            
+            # Tiempos de simulación
+            t = np.linspace(0, 80, 2000)
+            
+            # Operadores de aniquilación
+            sm1 = tensor(destroy(2), qeye(2), qeye(2), qeye(2), qeye(2))
+            ca = tensor(qeye(2), destroy(2), qeye(2), qeye(2), qeye(2))
+            a = tensor(qeye(2), qeye(2), destroy(2), qeye(2), qeye(2))
+            cb = tensor(qeye(2), qeye(2), qeye(2), destroy(2), qeye(2))
+            sm2 = tensor(qeye(2), qeye(2), qeye(2), qeye(2), destroy(2))
+            
+            # Hamiltoniano del sistema
+            H = (wq * (sm1.dag() * sm1 + sm2.dag() * sm2)) + wcavity * (a.dag() * a) + wcouplers * (ca.dag() * ca + cb.dag() *cb) + gqc * ( ca.dag() * sm1 + ca * sm1.dag() + cb.dag() * sm2 + cb * sm2.dag()) + gcw * (a.dag() * ca + a * ca.dag() + a.dag() * cb + a * cb.dag()) 
+            # Operadores de colapso
+            c_ops = []
+            
+            # Relajación de la cavidad
+            rate = kappa * (1 + n_th_a)
+            if rate > 0.0:
+                c_ops.append(np.sqrt(rate) * a)
+                c_ops.append(np.sqrt(rate)*ca)
+                c_ops.append(np.sqrt(rate) * cb)
+            
+            # Excitación térmica
+            rate = kappa * n_th_a
+            if rate > 0.0:
+                c_ops.append(np.sqrt(rate) * a.dag())
+                c_ops.append(np.sqrt(rate)*ca.dag())
+                c_ops.append(np.sqrt(rate) * cb.dag())
+            
+            # Relajación de los qubits
+            rate = gamma
+            if rate > 0.0:
+                c_ops.append(np.sqrt(rate) * sm1)
+                c_ops.append(np.sqrt(rate) * sm2)
+            
+            # Simulación temporal
+            output = mesolve(H, psi0, t, c_ops, [sm1.dag() * sm1, ca.dag() * ca, a.dag() * a, cb.dag() * cb, sm2.dag() * sm2])
+
+            poblacion_qb2 = output.expect[4]  # Última población del qubit b
+            
+            # Fidelidad en el tiempo entre el qubit B y el estado inicial del qubit A
+            fidelity_vals = []
+            rho_objetivo = rho_A_inicial  # El objetivo es transferir el estado de A a B
+            
+            for p in poblacion_qb2:  # población del qubit B a lo largo del tiempo
+                rho_t = p * ket2dm(basis(2, 1)) + (1 - p) * ket2dm(basis(2, 0))
+                F_t = fidelity(rho_t, rho_objetivo)
+                fidelity_vals.append(F_t)
+
+            fidelity_grid[i, j, k] = max(fidelity_vals) # Max fidelity across sweep
+            
+            n_qb = output.expect[4]
+    
+            period_t, Fidelity_peak = find_latency_by_peaks(fidelity_vals, t) #He cambiado la lista de máximo de población a directamente la lista de Fidelidad
+            
+            if period_t is not None:
+                L = 0.5 * period_t
+            else:
+                L = np.nan  # CHANGE TO np.nan
+
+            Latency_vals = []
+            Latency_vals.append(L)
+
+            Latency_grid[i, j, k] = min(Latency_vals) # Minimun Latency across sweep
+
+            if not np.isnan(L) and L > 0:
+                FOM[i, j, k] = fidelity_grid[i, j, k] / L
+            else:
+                FOM[i, j, k] = np.nan
+            
+
+def plot_landscape(grid, title, zlabel, g_vals_ghz, gamma_vals_ghz, kappa_vals_ghz):
+    GCOUP, KAPPA = np.meshgrid(g_vals_ghz, kappa_vals_ghz, indexing='ij')
+
+    for j, gamma_fixed in enumerate(gamma_vals_ghz):
+        
+        grid_slice = grid[j,:,:].T 
+
+        fig = plt.figure(figsize=(10, 7))
+        ax = fig.add_subplot(111, projection='3d')
+
+        # 3D Surface
+        surf = ax.plot_surface(GCOUP, KAPPA, grid_slice, cmap='viridis', edgecolor='none', alpha=0.9)
+
+        # Contour projection
+        ax.contour(GCOUP, KAPPA, grid_slice, zdir='z', offset=np.nanmin(grid_slice), cmap='viridis', linestyles='solid')
+
+        ax.set_xlabel('Coupling Strength (MHz)')
+        ax.set_ylabel('kappa (GHz)')
+        ax.set_zlabel(zlabel)
+        ax.set_title(f'{title} at gamma = {gamma_fixed} GHz')
+        fig.colorbar(surf, ax=ax, shrink=0.5, aspect=10, label=zlabel)
+        ax.set_zlim(np.nanmin(grid_slice), np.nanmax(grid_slice)*1.1)
+
+        plt.tight_layout()
+        plt.show()
+
+# --- Convert frequencies to GHz ---
+g_vals_ghz = g_vals / (2 * np.pi)
+gamma_vals_ghz = gamma_vals / (2 * np.pi)
+kappa_vals_ghz = kappa_vals / (2 * np.pi)
+
+# --- Plot Fidelity Landscape ---
+plot_landscape(fidelity_grid, "Maximum Fidelity Landscape", "Fidelity", g_vals_ghz, gamma_vals_ghz, kappa_vals_ghz)
+
+# --- Plot Latency Landscape ---
+plot_landscape(Latency_grid, "Minimum Latency Landscape", "Latency (ns)", g_vals_ghz, gamma_vals_ghz, kappa_vals_ghz)
+
+# --- Plot FoM Landscape ---
+plot_landscape(FOM, "Figure of Merit (FoM) Landscape", "FoM", g_vals_ghz, gamma_vals_ghz, kappa_vals_ghz)
+
+
+
+
+#__________________________________________________________________________________________________________
+#With the following code  you can check the behaviour for a fixed set of kappa's (losses due to the cavities)
+import numpy as np
+import matplotlib.pyplot as plt
+from qutip import *
+from mpl_toolkits.mplot3d import Axes3D  # Needed for 3D plotting
+
+from scipy.signal import find_peaks
+
+def find_latency_by_peaks(fidelity_vals, times, threshold=0.5):
+    """
+    Finds the first peak in fidelity above a threshold, giving a more physical latency estimate.
+    """
+    peaks, _ = find_peaks(fidelity_vals, height=threshold)
+    if len(peaks) == 0:
+        return None, None
+    first_peak = peaks[0]
+    return times[first_peak], fidelity_vals[first_peak]
+
+n=130
+wq = 6 * 2 * np.pi  # qubit frequency
+wcavity = 6 * 2 * np.pi  # cavity frequency
+wcouplers = 6 * 2 * np.pi  # frecuencia fija del acoplador
+gqc = 0.1 * 2 * np.pi  # coupling strength qubit-coupler
+gcw = 0.1 * 2 * np.pi  # coupling strength coupler-cavity
+
+
+# Define parameter grid
+gamma_vals = np.linspace(0.1, 1.0, 20) * 2 * np.pi  # 5 for speed; increase later
+kappa_vals = np.linspace(0.2, 1.0, 3) * 2 * np.pi
+g_vals = np.linspace(0.05, 5.0, 20) * 2 * np.pi
+
+fidelity_grid = np.zeros((len(gamma_vals), len(kappa_vals), len(g_vals)))
+Latency_grid = np.zeros((len(gamma_vals), len(kappa_vals), len(g_vals)))
+FOM = np.zeros((len(gamma_vals), len(kappa_vals), len(g_vals)))
+
+# Traverse the sacred parameter space
+for i, gamma in enumerate(gamma_vals):
+    for j, kappa in enumerate(kappa_vals):
+        for k, g in enumerate(g_vals):
+            
+            gqc = g  # coupling strength qubit-coupler
+            gcw = g  # coupling strength coupler-cavity
+            n_th_a = 0.0  # número promedio de excitaciones térmicas
+            
+            # Estado inicial: qubit A excitado, resto en tierra
+            psi0 = tensor(basis(2, 1), basis(2, 0), basis(2, 0), basis(2, 0), basis(2, 0))    
+            rho0 = psi0 * psi0.dag()
+            rho_A_inicial = rho0.ptrace(0)  # Estado inicial del qubit A
+            
+            # Tiempos de simulación
+            t = np.linspace(0, 80, 2000)
+            
+            # Operadores de aniquilación
+            sm1 = tensor(destroy(2), qeye(2), qeye(2), qeye(2), qeye(2))
+            ca = tensor(qeye(2), destroy(2), qeye(2), qeye(2), qeye(2))
+            a = tensor(qeye(2), qeye(2), destroy(2), qeye(2), qeye(2))
+            cb = tensor(qeye(2), qeye(2), qeye(2), destroy(2), qeye(2))
+            sm2 = tensor(qeye(2), qeye(2), qeye(2), qeye(2), destroy(2))
+            
+            # Hamiltoniano del sistema
+            H = (wq * (sm1.dag() * sm1 + sm2.dag() * sm2)) + wcavity * (a.dag() * a) + wcouplers * (ca.dag() * ca + cb.dag() *cb) + gqc * ( ca.dag() * sm1 + ca * sm1.dag() + cb.dag() * sm2 + cb * sm2.dag()) + gcw * (a.dag() * ca + a * ca.dag() + a.dag() * cb + a * cb.dag()) 
+            # Operadores de colapso
+            c_ops = []
+            
+            # Relajación de la cavidad
+            rate = kappa * (1 + n_th_a)
+            if rate > 0.0:
+                c_ops.append(np.sqrt(rate) * a)
+                c_ops.append(np.sqrt(rate)*ca)
+                c_ops.append(np.sqrt(rate) * cb)
+            
+            # Excitación térmica
+            rate = kappa * n_th_a
+            if rate > 0.0:
+                c_ops.append(np.sqrt(rate) * a.dag())
+                c_ops.append(np.sqrt(rate)*ca.dag())
+                c_ops.append(np.sqrt(rate) * cb.dag())
+            
+            # Relajación de los qubits
+            rate = gamma
+            if rate > 0.0:
+                c_ops.append(np.sqrt(rate) * sm1)
+                c_ops.append(np.sqrt(rate) * sm2)
+            
+            # Simulación temporal
+            output = mesolve(H, psi0, t, c_ops, [sm1.dag() * sm1, ca.dag() * ca, a.dag() * a, cb.dag() * cb, sm2.dag() * sm2])
+
+            poblacion_qb2 = output.expect[4]  # Última población del qubit b
+            
+            # Fidelidad en el tiempo entre el qubit B y el estado inicial del qubit A
+            fidelity_vals = []
+            rho_objetivo = rho_A_inicial  # El objetivo es transferir el estado de A a B
+            
+            for p in poblacion_qb2:  # población del qubit B a lo largo del tiempo
+                rho_t = p * ket2dm(basis(2, 1)) + (1 - p) * ket2dm(basis(2, 0))
+                F_t = fidelity(rho_t, rho_objetivo)
+                fidelity_vals.append(F_t)
+
+            fidelity_grid[i, j, k] = max(fidelity_vals) # Max fidelity across sweep
+            
+            n_qb = output.expect[4]
+    
+            period_t, Fidelity_peak = find_latency_by_peaks(fidelity_vals, t) #He cambiado la lista de máximo de población a directamente la lista de Fidelidad
+            
+            if period_t is not None:
+                L = 0.5 * period_t
+            else:
+                L = np.nan  # CHANGE TO np.nan
+
+            Latency_vals = []
+            Latency_vals.append(L)
+
+            Latency_grid[i, j, k] = min(Latency_vals) # Minimun Latency across sweep
+
+            if not np.isnan(L) and L > 0:
+                FOM[i, j, k] = fidelity_grid[i, j, k] / L
+            else:
+                FOM[i, j, k] = np.nan
+            
+
+def plot_landscape(grid, title, zlabel, g_vals_ghz, gamma_vals_ghz, kappa_vals_ghz):
+    GCOUP, GAMMA = np.meshgrid(g_vals_ghz, gamma_vals_ghz, indexing='ij')
+
+    for j, kappa_fixed in enumerate(kappa_vals_ghz):
+        
+        grid_slice = grid[:,j,:].T 
+
+        fig = plt.figure(figsize=(10, 7))
+        ax = fig.add_subplot(111, projection='3d')
+
+        # 3D Surface
+        surf = ax.plot_surface(GCOUP, GAMMA, grid_slice, cmap='viridis', edgecolor='none', alpha=0.9)
+
+        # Contour projection
+        ax.contour(GCOUP, GAMMA, grid_slice, zdir='z', offset=np.nanmin(grid_slice), cmap='viridis', linestyles='solid')
+
+        ax.set_xlabel('Coupling Strength (MHz)')
+        ax.set_ylabel('Gamma (GHz)')
+        ax.set_zlabel(zlabel)
+        ax.set_title(f'{title} at kappa = {kappa_fixed} GHz')
+        fig.colorbar(surf, ax=ax, shrink=0.5, aspect=10, label=zlabel)
+        ax.set_zlim(np.nanmin(grid_slice), np.nanmax(grid_slice)*1.1)
+
+        plt.tight_layout()
+        plt.show()
+
+# --- Convert frequencies to GHz ---
+g_vals_ghz = g_vals / (2 * np.pi)
+gamma_vals_ghz = gamma_vals / (2 * np.pi)
+kappa_vals_ghz = kappa_vals / (2 * np.pi)
+
+# --- Plot Fidelity Landscape ---
+plot_landscape(fidelity_grid, "Maximum Fidelity Landscape", "Fidelity", g_vals_ghz, gamma_vals_ghz, kappa_vals_ghz)
+
+# --- Plot Latency Landscape ---
+plot_landscape(Latency_grid, "Minimum Latency Landscape", "Latency (ns)", g_vals_ghz, gamma_vals_ghz, kappa_vals_ghz)
+
+# --- Plot FoM Landscape ---
+plot_landscape(FOM, "Figure of Merit (FoM) Landscape", "FoM", g_vals_ghz, gamma_vals_ghz, kappa_vals_ghz)
