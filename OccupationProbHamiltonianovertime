@@ -1,0 +1,104 @@
+#Resonant case #No losses # gqc = hcw = 0.05GHz # Coupling strength
+import matplotlib.pyplot as plt
+import numpy as np
+from qutip import *
+
+# System Parameters
+wq = 6 * 2 * np.pi        # Qubit frequency
+wcavity = 6 * 2 * np.pi   # Waveguide frequency
+wcouplers = 6 * 2 * np.pi  #Coupler frequency
+gqc = 0.05 * 2 * np.pi      # Coupling strength qubit-coupler
+gcw = 0.05 * 2 * np.pi      # Coupling strength coupler-waveguide
+
+atomic_decay_time_in_ns = 10000
+kappa = 0.0 * 2 * np.pi  # Cavity dissipation rate
+gamma = 0.0 * 2 * np.pi  # Atom dissipation rate
+n_th_a = 0.0  # Avg number of thermal bath excitations
+
+# Initial State: Qubit A excited
+psi0 = tensor(basis(2, 1), basis(2, 0), basis(2, 0), basis(2, 0) , basis(2, 0))  
+# Structure: qubit A | coupler A | Waveguide(Cavity) | coupler B | qubit B 
+
+# Time array
+t = np.linspace(0, 40, 1000)
+
+# Operators
+sm1 = tensor(destroy(2), qeye(2), qeye(2), qeye(2), qeye(2))
+ca = tensor(qeye(2), destroy(2), qeye(2), qeye(2), qeye(2))
+a = tensor(qeye(2), qeye(2), destroy(2), qeye(2), qeye(2))
+cb = tensor(qeye(2), qeye(2), qeye(2), destroy(2), qeye(2))
+sm2 = tensor(qeye(2), qeye(2), qeye(2), qeye(2), destroy(2))
+
+# Hamiltonian
+#H = (wq * (sm1.dag() * sm1 + sm2.dag() * sm2) + wcavity * (a.dag() * a) +
+    # gqw * (a.dag() * sm1 + a * sm1.dag() + a.dag() * sm2 + a * sm2.dag()))
+H = (wq * (sm1.dag() * sm1 + sm2.dag() * sm2)) + wcavity * (a.dag() * a) + wcouplers * (ca.dag() * ca + cb.dag() *cb) + gqc * (                     #Energía de cada parte del sistema
+    ca.dag() * sm1 + ca * sm1.dag() + cb.dag() * sm2 + cb * sm2.dag()) + gcw * (                                      #Energía de las interacciones entre los qubits y los acopladores
+    a.dag() * ca + a * ca.dag() + a.dag() * cb + a * cb.dag())                                                #Energía de las interacciones entre los acopladores y la cavidad/guiaonda
+
+# Collapse operators
+c_ops = []
+
+# Cavity relaxation
+rate = kappa * (1 + n_th_a)
+if rate > 0.0:
+    c_ops.append(np.sqrt(rate) * a)
+    c_ops.append(np.sqrt(rate) * ca)
+    c_ops.append(np.sqrt(rate) * cb)
+    
+# Cavity excitation (if temperature > 0)
+rate = kappa * n_th_a
+if rate > 0.0:
+    c_ops.append(np.sqrt(rate) * a.dag())
+    c_ops.append(np.sqrt(rate) * ca.dag())
+    c_ops.append(np.sqrt(rate) * cb.dag())
+
+# Qubit relaxation
+rate = gamma
+if rate > 0.0:
+    c_ops.append(np.sqrt(rate) * sm1)
+    c_ops.append(np.sqrt(rate) * sm2)
+
+# Solve master equation
+output = mesolve(H, psi0, t, c_ops, [sm1.dag() * sm1, ca.dag() * ca, a.dag() * a, cb.dag() * cb, sm2.dag() * sm2])
+
+n_qa = output.expect[0]  # Qubit A occupation probability
+n_ca = output.expect[1] # Coupler A occupation probability
+n_w = output.expect[2]  # Cavity occupation probability
+n_cb = output.expect[3] # Coupler B occupation probability
+n_qb = output.expect[4]  # Qubit B occupation probability
+
+# Fidelity Calculation (Maximum probability of Qubit B in |1⟩ state)
+fidelity_display = min(max(n_qb), 0.99)
+
+# Plot results
+fig, ax = plt.subplots(figsize=(10, 6))
+ax.plot(t, n_qa, label="Qubit A", linestyle='-', marker='o', markevery=20, markersize=9, linewidth=2.3)
+ax.plot(t, n_qb, label="Qubit B", linestyle='-', marker='s', markevery=20, markersize=9, linewidth=2.3)
+ax.plot(t, n_w, label="Cavity", color='green', linestyle='-', marker='D', markevery=40, markersize=9, linewidth=2.3)
+ax.plot(t, n_ca, label="Coup A", color='red', linestyle='-', marker='D', markevery=40, markersize=9, linewidth=2.3)
+ax.plot(t, n_cb, label="Coup B", color='yellow', linestyle='-', marker='D', markevery=40, markersize=9, linewidth=2.3)
+
+ax.set_xlabel("Time (ns)", fontsize=26)
+ax.set_ylabel("Occupation Probability", fontsize=26)
+ax.set_ylim(0, 1)
+ax.tick_params(axis='both', which='major', labelsize=20, width=1.5, length=5)
+ax.legend(loc="best", fontsize=19, frameon=True)
+
+# Adjust plot border thickness
+ax.spines['top'].set_linewidth(1.7)
+ax.spines['right'].set_linewidth(1.7)
+ax.spines['left'].set_linewidth(1.7)
+ax.spines['bottom'].set_linewidth(1.7)
+
+# Add Fidelity in Title
+#fig.suptitle(f'Fidelity = {fidelity_display:.2f}', fontsize=26)
+
+# Grid settings
+plt.grid(True, linestyle='--', linewidth=0.8, alpha=0.6)
+
+# Save figure as PDF
+#plt.savefig('tuned g 0.05GHz.pdf', format='pdf', dpi=1200, bbox_inches='tight')
+
+# Show the plot
+plt.show()
