@@ -1,0 +1,122 @@
+from scipy.signal import find_peaks
+import numpy as np
+import matplotlib.pyplot as plt
+from qutip import *
+
+def find_latency_by_peaks(fidelity_vals, times, threshold=0.5):
+    """
+    Finds the first peak in fidelity above a threshold, giving a more physical latency estimate.
+    """
+    peaks, _ = find_peaks(fidelity_vals, height=threshold)
+    if len(peaks) == 0:
+        return None, None
+    first_peak = peaks[0]
+    return times[first_peak], fidelity_vals[first_peak]
+
+n=130
+wq = 6 * 2 * np.pi  # qubit frequency
+wcavity = 6 * 2 * np.pi  # cavity frequency
+wcouplers = 6 * 2 * np.pi
+
+
+#latency=[]
+ges_percase=[]
+ges_barrido = np.linspace(0.05, 5, 50)
+
+losses = [0, 0.2, 0.4, 0.6, 0.8, 1]
+latency = [[] for _ in range(len(losses))]
+
+for i in range (0,len(losses)):
+    for j, coupstr in enumerate(ges_barrido):
+    
+        gqc = coupstr * 2 * np.pi  # coupling strength qubit-coupler
+        gcw = coupstr * 2 * np.pi  # coupling strength coupler-cavity
+        
+        kappa =  losses[i] * 2 * np.pi  # losses[i]*2*np.pi  # 0.1*2*np.pi  # cavity dissipation rate
+        gamma =  0.0 * 2 * np.pi #2 * np.pi / atomic_decay_time_in_ns  # atom dissipation rate
+        n_th_a = 0.0  # avg number of thermal bath excitation
+    
+        psi0 = tensor(basis(2, 1), basis(2, 0), basis(2, 0), basis(2, 0) , basis(2, 0))    # start with an excited atom
+        #atom1 #coupler1 #cavity #coupler2 #atom2
+    
+        # Time array
+        t = np.linspace(0, (j + 1) / 0.1, 10000)
+    
+        sm1 = tensor(destroy(2), qeye(2), qeye(2), qeye(2), qeye(2))
+        ca = tensor(qeye(2), destroy(2), qeye(2), qeye(2), qeye(2))
+        a = tensor(qeye(2), qeye(2), destroy(2), qeye(2), qeye(2))
+        cb = tensor(qeye(2), qeye(2), qeye(2), destroy(2), qeye(2))
+        sm2 = tensor(qeye(2), qeye(2), qeye(2), qeye(2), destroy(2))
+    
+    
+        H = (wq * (sm1.dag() * sm1 + sm2.dag() * sm2)) + wcavity * (a.dag() * a) + wcouplers * (ca.dag() * ca + cb.dag() *cb) + gqc * ( ca.dag() * sm1 + ca * sm1.dag() + cb.dag() * sm2 + cb * sm2.dag()) + gcw * (a.dag() * ca + a * ca.dag() + a.dag() * cb + a * cb.dag()) 
+        
+        c_ops = []
+    
+        # cavity relaxation
+        rate = kappa * (1 + n_th_a)
+        if rate > 0.0:
+            c_ops.append(np.sqrt(rate) * a)
+            c_ops.append(np.sqrt(rate)*ca)
+            c_ops.append(np.sqrt(rate) * cb)
+            
+        # cavity excitation, if temperature > 0
+        rate = kappa * n_th_a
+        if rate > 0.0:
+            c_ops.append(np.sqrt(rate) * a.dag())
+            c_ops.append(np.sqrt(rate)*ca.dag())
+            c_ops.append(np.sqrt(rate) * cb.dag())
+    
+        # qubit relaxation
+        rate = gamma
+        if rate > 0.0:
+            c_ops.append(np.sqrt(rate) * sm1)
+            c_ops.append(np.sqrt(rate) * sm2)
+    
+        output = mesolve(H, psi0, t, c_ops, [sm1.dag() * sm1, ca.dag() * ca, a.dag() * a, cb.dag() * cb, sm2.dag() * sm2])
+    
+        n_qb = output.expect[4]
+    
+        period_t, Fidelity_peak = find_latency_by_peaks(n_qb, t)
+
+        if period_t is not None:
+            L = 0.5 * period_t
+        else:
+            L = np.nan # or 0, or np.nan depending on how you want to handle it
+
+        latency[i].append(L)
+        
+fig, ax = plt.subplots(figsize=(8, 6))  # Create one large plot
+
+# Adjust these numbers to modify font sizes, linewidths, and marker sizes
+label_fontsize = 25  # Reduced from 22
+tick_fontsize = 19   # Reduced from 18
+legend_fontsize = 16  # Reduced from 16
+linewidth = 3      # Slightly reduced from 2.5
+marker_size = 7      # Slightly reduced from 7
+border_thickness = 1.5  # Slightly reduced from 2    
+    
+# Customize axes with slightly less bold labels and larger ticks
+for i in range(len(latency)):
+    plt.plot(ges_barrido, latency[i], label='$\kappa$ = ' + str(np.round(losses[i], 2)),
+             
+             linewidth=2.3, markersize=8)  # Thicker trend lines and larger markers
+    
+ax.set_xlabel("$g_{coup}$ (GHz)", fontsize=18)
+ax.set_ylabel("Latency (ns)", fontsize=25)
+#plt.yscale('log')
+ax.tick_params(axis='both', which='major', labelsize=19, width=1.5, length=5)   
+
+# Adjust plot border thickness
+ax.spines['top'].set_linewidth(border_thickness)
+ax.spines['right'].set_linewidth(border_thickness)
+ax.spines['left'].set_linewidth(border_thickness)
+ax.spines['bottom'].set_linewidth(border_thickness)
+
+# Add a light grid for better readability
+plt.grid(True, linestyle='--', linewidth=1, alpha=0.8)
+
+plt.legend(title='', fontsize=16, title_fontsize=14)
+# Save and show
+#plt.savefig('resonant latency.pdf', format='pdf', dpi=1200, bbox_inches='tight')
+plt.show()
