@@ -1,0 +1,121 @@
+import matplotlib.pyplot as plt
+import numpy as np
+from qutip import *
+from scipy.signal import find_peaks
+
+n=130
+wq = 6 * 2 * np.pi  # qubit frequency
+wcavity = 6 * 2 * np.pi  # cavity frequency
+wcouplers = 6 * 2 * np.pi
+
+#Barrido de los parámetros
+#barrido_wcoup = np.linspace(3 * 2 * np.pi, 8 * 2 * np.pi, 500)  # Frecuencia de acopladores (3-8 GHz)
+#ges=np.logspace(-2,0,n) #coupling strenght 130 puntos repartidos entre 0.01 y 1
+
+ges_barrido = np.linspace(0.05, 1, 500)
+
+losses = [0, 0.2, 0.4, 0.6, 0.8, 1]
+fidelity_vals = [[] for _ in range(len(losses))]
+
+#for i, losses in enumerate(Kappa_losses):
+for i in range (0,len(losses)):
+    for j, coupstr in enumerate(ges_barrido):
+        gqc = coupstr * 2 * np.pi  # coupling strength qubit-coupler
+        gcw = coupstr * 2 * np.pi  # coupling strength coupler-cavity
+        
+        kappa =  losses[i] * 2 * np.pi  # losses[i]*2*np.pi  # 0.1*2*np.pi  # cavity dissipation rate
+        gamma =  0.0 * 2 * np.pi #2 * np.pi / atomic_decay_time_in_ns  # atom dissipation rate
+        n_th_a = 0.0  # avg number of thermal bath excitation
+    
+        psi0 = tensor(basis(2, 1), basis(2, 0), basis(2, 0), basis(2, 0) , basis(2, 0))    # start with an excited atom
+        #atom1 #coupler1 #cavity #coupler2 #atom2
+        rho0 = psi0 * psi0.dag() # Matriz de densidad del estado inicial rho
+        rho_A_inicial = rho0.ptrace(0)  # Extrae la matriz de densidad del qubit A (sistema 0)
+    
+        # Time array
+        t = np.linspace(0, 40, 1000)
+    
+        sm1 = tensor(destroy(2), qeye(2), qeye(2), qeye(2), qeye(2))
+        ca = tensor(qeye(2), destroy(2), qeye(2), qeye(2), qeye(2))
+        a = tensor(qeye(2), qeye(2), destroy(2), qeye(2), qeye(2))
+        cb = tensor(qeye(2), qeye(2), qeye(2), destroy(2), qeye(2))
+        sm2 = tensor(qeye(2), qeye(2), qeye(2), qeye(2), destroy(2))
+    
+    
+        H = (wq * (sm1.dag() * sm1 + sm2.dag() * sm2)) + wcavity * (a.dag() * a) + wcouplers * (ca.dag() * ca + cb.dag() *cb) + gqc * ( ca.dag() * sm1 + ca * sm1.dag() + cb.dag() * sm2 + cb * sm2.dag()) + gcw * (a.dag() * ca + a * ca.dag() + a.dag() * cb + a * cb.dag()) 
+        
+        c_ops = []
+    
+        # cavity relaxation
+        rate = kappa * (1 + n_th_a)
+        if rate > 0.0:
+            c_ops.append(np.sqrt(rate) * a)
+            c_ops.append(np.sqrt(rate)*ca)
+            c_ops.append(np.sqrt(rate) * cb)
+            
+        # cavity excitation, if temperature > 0
+        rate = kappa * n_th_a
+        if rate > 0.0:
+            c_ops.append(np.sqrt(rate) * a.dag())
+            c_ops.append(np.sqrt(rate)*ca.dag())
+            c_ops.append(np.sqrt(rate) * cb.dag())
+    
+        # qubit relaxation
+        rate = gamma
+        if rate > 0.0:
+            c_ops.append(np.sqrt(rate) * sm1)
+            c_ops.append(np.sqrt(rate) * sm2)
+    
+        output = mesolve(H, psi0, t, c_ops, [sm1.dag() * sm1, ca.dag() * ca, a.dag() * a, cb.dag() * cb, sm2.dag() * sm2])
+    
+        # Obtener la máxima población alcanzada en Qubit B durante la evolución
+        poblacion_max_qb2 = max(output.expect[4])
+        
+        # Definir rho_final como una matriz de densidad basada en esta población
+        rho_final = poblacion_max_qb2 * ket2dm(basis(2, 1)) + (1 - poblacion_max_qb2) * ket2dm(basis(2, 0))
+        
+        # Estado objetivo: Qubit B en |1>
+        #rho_objetivo = ket2dm(basis(2, 1))
+        # El estado objetivo es la misma matriz de densidad que tenía el qubit A, pero ahora en el qubit B
+        rho_objetivo = rho_A_inicial  # Transferimos el estado del qubit A al qubit B
+        
+        # Calcular la fidelidad correctamente
+        F = fidelity(rho_final, rho_objetivo)
+        fidelity_vals[i].append(F)
+            
+# Plotting the results
+fig, ax = plt.subplots(figsize=(8, 6))  # Create one large plot
+
+# Adjust these numbers to modify font sizes, linewidths, and marker sizes
+label_fontsize = 25  # Reduced from 22
+tick_fontsize = 19   # Reduced from 18
+legend_fontsize = 16  # Reduced from 16
+linewidth = 3      # Slightly reduced from 2.5
+marker_size = 7      # Slightly reduced from 7
+border_thickness = 1.5  # Slightly reduced from 2    
+    
+# Customize axes with slightly less bold labels and larger ticks
+#plt.plot(ges_barrido, latency, linewidth=2.3)
+for i in range(len(fidelity_vals)):
+    plt.plot(ges_barrido, fidelity_vals[i], label='$\kappa$ = ' + str(np.round(losses[i], 2)),
+             
+             linewidth=2.3, markersize=8)  # Thicker trend lines and larger markers
+    
+ax.set_xlabel("$g_{coup}$ (GHz)", fontsize=18)
+ax.set_ylabel("Fidelity", fontsize=25)
+#plt.yscale('log')
+ax.tick_params(axis='both', which='major', labelsize=19, width=1.5, length=5)   
+
+# Adjust plot border thickness
+ax.spines['top'].set_linewidth(border_thickness)
+ax.spines['right'].set_linewidth(border_thickness)
+ax.spines['left'].set_linewidth(border_thickness)
+ax.spines['bottom'].set_linewidth(border_thickness)
+
+# Add a light grid for better readability
+plt.grid(True, linestyle='--', linewidth=1, alpha=0.8)
+
+plt.legend(title='', fontsize=16, title_fontsize=14)
+# Save and show
+#plt.savefig('resonant latency.pdf', format='pdf', dpi=1200, bbox_inches='tight')
+plt.show()
